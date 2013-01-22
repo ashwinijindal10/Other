@@ -1,0 +1,1811 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data.Objects;
+using System.Data.Objects.DataClasses;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Linq.Expressions;
+using System.Reflection;
+using System.Security;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Web;
+using System.Web.Mvc;
+using DoddleReport;
+using DoddleReport.Web;
+using DoddleReport.Writers;
+using DoddleReport.iTextSharp;
+using ExcelReportWriter = DoddleReport.OpenXml.ExcelReportWriter;
+
+namespace SchoolSAAS.Models.common
+{
+    public static class Extensions
+    {
+        public static void DeleteObjects<TEntity>(this ObjectSet<TEntity> set, IEnumerable<TEntity> data) where TEntity : class
+        {
+            foreach (var entity in data)
+                set.DeleteObject(entity);
+        }
+
+        public static void DeleteObjects<TEntity>(this ObjectSet<TEntity> set, Expression<Func<TEntity, bool>> predicate) where TEntity : class
+        {
+            foreach (var entity in set.Where(predicate))
+                set.DeleteObject(entity);
+        }
+
+
+        public static EntityObject Clone(this EntityObject Entity)
+        {
+            var Type = Entity.GetType();
+            var Clone = Activator.CreateInstance(Type);
+
+            foreach (var Property in Type.GetProperties(BindingFlags.GetProperty | BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly | BindingFlags.SetProperty))
+            {
+                if (Property.PropertyType.IsGenericType && Property.PropertyType.GetGenericTypeDefinition() == typeof(EntityReference<>)) continue;
+                if (Property.PropertyType.IsGenericType && Property.PropertyType.GetGenericTypeDefinition() == typeof(EntityCollection<>)) continue;
+                if (Property.PropertyType.IsSubclassOf(typeof(EntityObject))) continue;
+
+                if (Property.CanWrite)
+                {
+                    Property.SetValue(Clone, Property.GetValue(Entity, null), null);
+                }
+            }
+
+            return (EntityObject)Clone;
+        }
+
+        public static int ToInt(this object ob)
+        {
+            int rs = 0;
+            if (int.TryParse((ob == null ? "" : ob.ToString()), out rs))
+            {
+                return rs;
+            }
+            return rs;
+        }
+
+        public static List<int> ToIntList(this List<string> ob)
+        {
+            return ob.ConvertAll(s => s.ToInt());
+        }
+
+        public static long ToLong(this object ob)
+        {
+            long rs = 0;
+            if (long.TryParse((ob == null ? "" : ob.ToString()), out rs))
+            {
+                return rs;
+            }
+            return rs;
+        }
+
+        public static DateTime ToDateTime(this object ob)
+        {
+            DateTime rs = DateTime.MinValue;
+            if (DateTime.TryParse(ob == null ? default(DateTime).ToString(CultureInfo.InvariantCulture) : ob.ToString(), out rs))
+            {
+                return rs;
+            }
+            return rs;
+        }
+
+        public static string ToText(this object ob)
+        {
+            return (string) ob ?? "";
+        }
+
+        public static string ToFormat(this DateTime datetime, string format = "dd-MMM-yyyy")
+        {
+            return datetime.ToString(format);
+        }
+
+        public static string[] ToIdArray(this string serialstring, params char[] spilter)
+        {
+            return serialstring.Split(spilter, StringSplitOptions.RemoveEmptyEntries);
+        }
+
+        public static int[] ToIntegerArray(this string[] stringar)
+        {
+            var rs = new int[stringar.Count()];
+            for (int i = 0; i < stringar.Count(); i++)
+            {
+                rs[i] = stringar[i].ToInt();
+            }
+            return rs;
+        }
+
+        public static void ForEachWithIndex<T>(this IEnumerable<T> enumerable, Action<T, int> handler)
+        {
+            int idx = 0;
+            foreach (T item in enumerable)
+                handler(item, idx++);
+        }
+
+        public static int GetNoOfWorkingDays(this DateTime startDate, DateTime endDate, DayOfWeek[] weekends)
+        {
+            return
+                Enumerable.Range(0, Convert.ToInt32(endDate.Subtract(startDate).TotalDays) + 1).Select(
+                    i => weekends.Contains(startDate.AddDays(i).DayOfWeek) ? 0 : 1).Sum();
+        }
+
+        public static IEnumerable<T> Page<T>(this IEnumerable<T> list, int page, int pageSize)
+        {
+            return list.Skip((page - 1)*pageSize).Take(pageSize);
+        }
+
+        public static string RemoveDigits(string key)
+        {
+            return Regex.Replace(key, @"\d", "");
+        }
+
+        public static string ToDigitsOnly(this string input)
+        {
+            var digitsOnly = new Regex(@"[^\d]");
+            return digitsOnly.Replace(input, "");
+        }
+
+        public static string ToUpperLowerNameVariant(this string value)
+        {
+            if (string.IsNullOrEmpty(value)) return "";
+            char[] valuearray = value.ToLower().ToCharArray();
+            bool nextupper = true;
+            for (int i = 0; i < (valuearray.Count() - 1); i++)
+            {
+                if (nextupper)
+                {
+                    valuearray[i] = char.Parse(valuearray[i].ToString(CultureInfo.InvariantCulture).ToUpper());
+                    nextupper = false;
+                }
+                else
+                {
+                    switch (valuearray[i])
+                    {
+                        case ' ':
+                        case '-':
+                        case '.':
+                        case ':':
+                        case '\n':
+                            nextupper = true;
+                            break;
+                        default:
+                            nextupper = false;
+                            break;
+                    }
+                }
+            }
+            return new string(valuearray);
+        }
+
+
+        public static string RelativeFromAbsolutePath(this string path)
+        {
+            if (HttpContext.Current != null)
+            {
+                HttpRequest request = HttpContext.Current.Request;
+                string applicationPath = request.PhysicalApplicationPath;
+                string virtualDir = request.ApplicationPath;
+                virtualDir = virtualDir == "/" ? virtualDir : (virtualDir + "/");
+                if (applicationPath != null) return path.Replace(applicationPath, virtualDir).Replace(@"\", "/");
+            }
+            throw new InvalidOperationException(
+                "We can only map an absolute back to a relative path if an HttpContext is available.");
+        }
+
+        public static void ForEachInEnumerable<TEnumerable>(this IEnumerable<TEnumerable> enumerable,
+                                                            Action<TEnumerable> action)
+        {
+            foreach (TEnumerable item in enumerable)
+            {
+                action(item);
+            }
+        }
+
+        public static string ToContinueString(this string value, int count)
+        {
+            if (value.Count() > count)
+            {
+                value = string.Concat(value.Substring(0, count), "...");
+            }
+
+            return value;
+        }
+
+        public static List<string> GetSelectedKeys(this FormCollection fc, string keyword)
+        {
+            return fc.AllKeys.Where(s => s.StartsWith(keyword)).Select(s => s.Replace(keyword, "")).ToList();
+        }
+
+        public static List<string> GetSelectedValues(this FormCollection fc, string keyword)
+        {
+            return
+                fc.AllKeys.Where(s => s.StartsWith(keyword)).Select(s => fc[s].ToString(CultureInfo.InvariantCulture)).
+                    ToList();
+        }
+
+        public static Dictionary<long, string> GetSelectedItems(this FormCollection fc, string keyword)
+        {
+            return
+                fc.AllKeys.Where(s => s.StartsWith(keyword)).ToDictionary(s => s.Replace(keyword, "").ToLong(),
+                                                                          s =>
+                                                                          fc[s].ToString(CultureInfo.InvariantCulture));
+        }
+        public static bool Contains(this string source, string toCheck, StringComparison comp)
+        {
+            if (string.IsNullOrEmpty(toCheck) || string.IsNullOrEmpty(source))
+                return true;
+
+            return source.IndexOf(toCheck, comp) >= 0;
+        } 
+        public static double  PercentOf(this int position, int max )
+        {
+            var dividebyzero = 0;
+            double percent;
+            if (max != 0)
+                percent = (100 * position) / max;
+            else
+                percent = dividebyzero; 
+
+            return percent;
+        }
+    }
+
+    public static class DirectoryInfoExtensions
+    {
+        public static void Empty(this DirectoryInfo directory)
+        {
+            foreach (FileInfo file in directory.GetFiles()) file.Delete();
+            foreach (DirectoryInfo subDirectory in directory.GetDirectories()) subDirectory.Delete(true);
+        }
+
+        // Copies all files from one directory to another.
+        public static void CopyTo(this DirectoryInfo source, string destDirectory, bool recursive)
+        {
+            if (source == null)
+                throw new ArgumentNullException("source");
+            if (destDirectory == null)
+                throw new ArgumentNullException("destDirectory");
+            // Compile the target.
+            var target = new DirectoryInfo(destDirectory);
+            // If the source doesn’t exist, we have to throw an exception.
+            if (!source.Exists)
+                throw new DirectoryNotFoundException("Source directory not found: " + source.FullName);
+            // If the target doesn’t exist, we create it.
+            if (!target.Exists)
+                target.Create();
+
+            // Get all files and copy them over.
+            foreach (FileInfo file in source.GetFiles())
+            {
+                file.CopyTo(Path.Combine(target.FullName, file.Name), true);
+            }
+
+            // Return if no recursive call is required.
+            if (!recursive)
+                return;
+
+            // Do the same for all sub directories.
+            foreach (DirectoryInfo directory in source.GetDirectories())
+            {
+                CopyTo(directory, Path.Combine(target.FullName, directory.Name), recursive);
+            }
+        }
+
+        public static void CreateDirectory(this DirectoryInfo dirInfo)
+        {
+            if (dirInfo.Parent != null) CreateDirectory(dirInfo.Parent);
+            if (!dirInfo.Exists) dirInfo.Create();
+        }
+
+        public static void CopyFileTo(this string src, string dest)
+        {
+            var source = new FileInfo(src);
+            if (source == null)
+                throw new ArgumentNullException("source");
+            if (dest == null)
+                throw new ArgumentNullException("dest");
+            // Compile the target.
+            var target = new DirectoryInfo(dest);
+            // If the source doesn’t exist, we have to throw an exception.
+            if (!source.Exists)
+                throw new DirectoryNotFoundException("Source directory not found: " + source.FullName);
+            // Get all files and copy them over.
+            source.CopyTo(dest, true);
+        }
+
+        public static void DeleteFile(this string fpath)
+        {
+            var source = new FileInfo(fpath);
+            try
+            {
+                source.Delete();
+            }catch(Exception ex)
+            {
+                Console.Write(ex.Message);
+            }
+        }
+    }
+
+    public static class IEnumerableExtensions
+    {
+        /// <summary>
+        /// Performs the specified action on each element of the list
+        /// </summary>
+        public static void Each<T>(this IEnumerable<T> list, Action<T> action)
+        {
+            if (action == null)
+            {
+                throw new ArgumentNullException("action");
+            }
+            IEnumerator<T> enumerator = list.GetEnumerator();
+            while (enumerator.MoveNext())
+            {
+                action(enumerator.Current);
+            }
+        }
+
+        /// <summary>
+        /// Performs the specified action on each element of the list and includes
+        /// an index value (starting at 0)
+        /// </summary>
+        public static void EachIndex<T>(this IEnumerable<T> list, Action<T, int> action)
+        {
+            if (action == null)
+            {
+                throw new ArgumentNullException("action");
+            }
+            IEnumerator<T> enumerator = list.GetEnumerator();
+            int count = 0;
+            while (enumerator.MoveNext())
+            {
+                action(enumerator.Current, count++);
+            }
+        }
+
+        /// <summary>
+        /// Validates that the predicate is true for each element of the list
+        /// </summary>      
+        public static bool TrueForAll<T>(this IEnumerable<T> list, Predicate<T> predicate)
+        {
+            if (predicate == null)
+            {
+                throw new ArgumentNullException("predicate");
+            }
+            IEnumerator<T> enumerator = list.GetEnumerator();
+            while (enumerator.MoveNext())
+            {
+                if (!predicate(enumerator.Current))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Retuns a list of all items matching the predicate
+        /// </summary>      
+        public static List<T> FindAll<T>(this IEnumerable<T> list, Predicate<T> predicate)
+        {
+            if (predicate == null)
+            {
+                throw new ArgumentNullException("predicate");
+            }
+            var found = new List<T>();
+            IEnumerator<T> enumerator = list.GetEnumerator();
+            while (enumerator.MoveNext())
+            {
+                if (predicate(enumerator.Current))
+                {
+                    found.Add(enumerator.Current);
+                }
+            }
+            return found;
+        }
+
+        /// <summary>
+        /// Retuns the first matching item
+        /// </summary>      
+        public static T Find<T>(this IEnumerable<T> list, Predicate<T> predicate)
+        {
+            if (predicate == null)
+            {
+                throw new ArgumentNullException("predicate");
+            }
+            IEnumerator<T> enumerator = list.GetEnumerator();
+            while (enumerator.MoveNext())
+            {
+                if (predicate(enumerator.Current))
+                {
+                    return enumerator.Current;
+                }
+            }
+            return default(T);
+        }
+
+        /// <summary>
+        /// Finds the index of an item
+        /// </summary>      
+        public static int Index<T>(this IEnumerable<T> list, Predicate<T> predicate)
+        {
+            if (predicate == null)
+            {
+                throw new ArgumentNullException("predicate");
+            }
+            IEnumerator<T> enumerator = list.GetEnumerator();
+            for (int i = 0; enumerator.MoveNext(); ++i)
+            {
+                if (predicate(enumerator.Current))
+                {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        /// <summary>
+        /// Determines whether or not the item exists
+        /// </summary>      
+        public static bool Exists<T>(this IEnumerable<T> list, Predicate<T> predicate)
+        {
+            return list.Index(predicate) > -1;
+        }
+
+        /// <summary>
+        /// new
+        /// </summary>
+        /// <param name="list"></param>
+        /// <returns></returns>
+        public static bool IsNullOrEmpty(this IEnumerable list)
+        {
+            return list == null ? true : list.GetEnumerator().MoveNext() == false;
+        }
+
+        /// <summary>
+        /// new
+        /// </summary>
+        /// <param name="list"></param>
+        /// <returns></returns>
+        /// <exception cref="ArgumentNullException"></exception>
+        public static bool IsEmpty(this IEnumerable list)
+        {
+            if (list == null)
+                throw new ArgumentNullException("list");
+            return list.GetEnumerator().MoveNext() == false;
+        }
+
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="list"></param>
+        /// <returns></returns>
+        public static bool IsNullOrEmpty(this IListSource list)
+        {
+            return list == null ? true : list.GetList().Count == 0;
+        }
+    }
+
+    public static class HttpRequestExtensions
+    {
+        private static readonly string[] _ipHeaderOrder = new[]
+                                                              {
+                                                                  "HTTP_X_FORWARDED_FOR", "HTTP_X_CLUSTER_CLIENT_IP",
+                                                                  "REMOTE_ADDR"
+                                                              };
+
+        /// <summary>
+        /// Returns the client's real IP address, taking into accout some proxying and clusters
+        /// </summary>
+        /// <remarks>
+        /// Many proxies don't expose the real client's IP address. In such cases, the proxies 
+        /// IP address will be returned
+        /// </remarks>
+        /// <returns>The best guess at a client's IP address, or an empty string</returns>
+        public static string ClientAddress(this HttpRequest request)
+        {
+            foreach (string header in _ipHeaderOrder)
+            {
+                string ipAddress = request.ServerVariables[header];
+                if (ipAddress != null)
+                {
+                    return ipAddress;
+                }
+            }
+            return string.Empty;
+        }
+    }
+
+    public static class SystemTime
+    {
+        // Returns the current DateTime.
+        public static Func<DateTime> Now = () => DateTime.Now;
+
+        public static void ResetNow()
+        {
+            Now = () => DateTime.Now;
+        }
+    }
+
+    public static class IntExtensions
+    {
+      #region main
+      /// <summary>
+      /// Returns the suffic (st, nd, rd, th) for the specified number
+      /// </summary>      
+      public static string Suffix(this int number)
+      {         
+         if (number >= 10 && number < 20)
+         {
+            return "th";
+         }
+         switch (number % 10)
+         {
+            case 1:
+               return "st";
+            case 2:
+               return "nd";
+            case 3:
+               return "rd";
+            default:
+               return "th";
+         }
+      }
+      /// <summary>
+      /// Returns the suffix for the specified number appended to the number
+      /// (1st, 12th, 33rd, 2nd)
+      /// </summary>      
+      public static string Suffixed(this int number)
+      {
+         return number + number.Suffix();
+      }
+      /// <summary>
+      /// Performs the specified action a given number of times
+      /// 3.times(i => sum += i);
+      /// </summary>      
+      public static void Times(this int times, Action<int> action)
+      {
+         if (action == null)
+         {
+            throw new ArgumentNullException("action");
+         }
+         for (int i = 1; i <= times; ++i)
+         {
+            action(i);
+         }
+      }
+      /// <summary>
+      /// Performs the speficied action from start to end
+      /// 3.UpTo(5, i => sum += i)
+      /// </summary>      
+      public static void UpTo(this int start, int end, Action<int> action)
+      {
+         if (action == null)
+         {
+            throw new ArgumentNullException("action");
+         }
+         for (int i = start; i <= end; ++i)
+         {
+            action(i);
+         }
+      }
+
+      // TODO for all ints...
+      public static bool IsPrimeNew<T>(this T value) where T : struct
+      {
+         return false;
+      }
+      /// <summary>
+      /// 
+      /// </summary>
+      /// <param name="ToBeChecked"></param>
+      /// <returns></returns>
+      public static bool IsPrime<T>(this int ToBeChecked)
+      {
+         System.Collections.BitArray numbers = new System.Collections.BitArray(ToBeChecked + 1, true);
+         for (Int32 i = 2; i < ToBeChecked + 1; i++)
+            if (numbers[i])
+            {
+               for (Int32 j = i * 2; j < ToBeChecked + 1; j += i)
+                  numbers[j] = false;
+               if (numbers[i])
+               {
+                  if (ToBeChecked == i)
+                  {
+                     return true;
+                  }
+               }
+            }
+         return false;
+      }
+#endregion
+      #region IntDateExtensions
+      /// <summary>
+      /// Returns the date the number of years ago
+      /// </summary>      
+      public static DateTime YearsAgo(this int years)
+      {
+          return SystemTime.Now().AddYears(-years);
+      }
+      /// <summary>
+      /// Returns the date the number of months ago
+      /// </summary>
+      public static DateTime MonthsAgo(this int months)
+      {
+          return SystemTime.Now().AddMonths(-months);
+      }
+      /// <summary>
+      /// Returns the date the number of days ago
+      /// </summary>
+      public static DateTime DaysAgo(this int days)
+      {
+          return SystemTime.Now().AddDays(-days);
+      }
+      /// <summary>
+      /// Returns the date the number of hours ago
+      /// </summary>
+      public static DateTime HoursAgo(this int hours)
+      {
+          return SystemTime.Now().AddHours(-hours);
+      }
+      /// <summary>
+      /// Returns the date the number of minutes ago
+      /// </summary>
+      public static DateTime MinutesAgo(this int minutes)
+      {
+          return SystemTime.Now().AddMinutes(-minutes);
+      }
+      /// <summary>
+      /// Returns the date the seconds of years ago
+      /// </summary>
+      public static DateTime SecondsAgo(this int seconds)
+      {
+          return SystemTime.Now().AddSeconds(-seconds);
+      }
+      /// <summary>
+      /// Returns the date the number of years from now
+      /// </summary>
+      public static DateTime YearsFromNow(this int years)
+      {
+          return SystemTime.Now().AddYears(years);
+      }
+      /// <summary>
+      /// Returns the date the number of months from now
+      /// </summary>
+      public static DateTime MonthsFromNow(this int months)
+      {
+          return SystemTime.Now().AddMonths(months);
+      }
+      /// <summary>
+      /// Returns the date the number of days from now
+      /// </summary>
+      public static DateTime DaysFromNow(this int days)
+      {
+          return SystemTime.Now().AddDays(days);
+      }
+      /// <summary>
+      /// Returns the date the number of hours from now
+      /// </summary>
+      public static DateTime HoursFromNow(this int hours)
+      {
+          return SystemTime.Now().AddHours(hours);
+      }
+      /// <summary>
+      /// Returns the date the number of minutes from now
+      /// </summary>
+      public static DateTime MinutesFromNow(this int minutes)
+      {
+          return SystemTime.Now().AddMinutes(minutes);
+      }
+      /// <summary>
+      /// Returns the date the number of seconds from now
+      /// </summary>
+      public static DateTime SecondsFromNow(this int seconds)
+      {
+          return SystemTime.Now().AddSeconds(seconds);
+      }
+
+      /// <summary>
+      /// Returns true if the given year is a leap year
+      /// </summary>
+      public static bool IsLeapYear(this int year)
+      {
+          return year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+      }
+
+      // todo these do not work for byte, sbyte, short, ushort, long, ulong, uint
+      // todo these can also be implemented for float, double, decimal
+      // todo maybe best on IConvertable? except: Boolean, Char, DateTime, DBNull, Empty, Object, String
+      // todo nullable valuetype support
+      // todo implicit / explicit castings?
+
+
+      internal static bool IsNumericTypeCode(TypeCode TypCode)
+      {
+          switch (TypCode)
+          {
+              case TypeCode.Boolean:
+              case TypeCode.Byte:
+              case TypeCode.Int16:
+              case TypeCode.Int32:
+              case TypeCode.Int64:
+              case TypeCode.Single:
+              case TypeCode.Double:
+              case TypeCode.Decimal:
+                  return true;
+          }
+          return false;
+      }
+
+      // ??? TypeConverter and castable objects
+
+      public static TimeSpan ToDays<T>(this T source) where T : IConvertible
+      {
+          return TimeSpan.FromDays(Convert.ToDouble(source));
+      }
+
+      public static TimeSpan ToDays<T>(this Nullable<T> source) where T : struct, IConvertible
+      {
+          return TimeSpan.FromDays(Convert.ToDouble(source.Value));
+      }
+
+      /// <summary>
+      /// Returns a timespan for the number of days
+      /// </summary>      
+      public static TimeSpan Days(this int days)
+      {
+          return new TimeSpan(days, 0, 0, 0);
+      }
+      /// <summary>
+      /// Returns a timespan for the number of hours
+      /// </summary>
+      public static TimeSpan Hours(this int hours)
+      {
+          return new TimeSpan(0, hours, 0, 0);
+      }
+      /// <summary>
+      /// Returns a timespan for the number of minutes
+      /// </summary>
+      public static TimeSpan Minutes(this int minutes)
+      {
+          return new TimeSpan(0, 0, minutes, 0);
+      }
+      /// <summary>
+      /// Returns a timespan for the number of seconds
+      /// </summary>
+      public static TimeSpan Seconds(this int seconds)
+      {
+          return new TimeSpan(0, 0, 0, seconds);
+      }
+      #endregion
+      #region IntMathExtensions
+      /// <summary>
+      /// Determines if a number is even or not
+      /// </summary>      
+      public static bool IsEven(this int number)
+      {
+          return number % 2 == 0;
+      }
+      /// <summary>
+      /// Determines if a number is odd or not
+      /// </summary>
+      public static bool IsOdd(this int number)
+      {
+          return !number.IsEven();
+      }
+      /// <summary>
+      /// if the number is a multiple of all supplied factors
+      /// </summary>
+      public static bool MultipleOf(this int number, params int[] factors)
+      {
+          return factors.Length != 0 && factors.TrueForAll(factor => number % factor == 0);
+      }
+      /// <summary>
+      /// if the number is a factor of all supplied multiples
+      /// </summary>
+      public static bool FactorOf(this int number, params int[] multiples)
+      {
+          return multiples.Length != 0 && multiples.TrueForAll(multiple => multiple % number == 0);
+      }
+      #endregion
+    }
+    
+    public static class StringExtensions
+    {
+        #region EncodingType enum
+
+        public enum EncodingType
+        {
+            Utf7,
+            Utf8,
+            Ascii,
+            Unicode,
+            Default,
+        }
+
+        #endregion
+
+        #region main
+
+        private static readonly Regex _htmlTagPattern = new Regex(@"<\/?[^>]*>",
+                                                                  RegexOptions.Compiled | RegexOptions.Multiline);
+
+        private static readonly Regex _multipleSpaces = new Regex(@"\s{2,}",
+                                                                  RegexOptions.Compiled | RegexOptions.Multiline);
+
+        private static readonly Regex _noSpaceAfterPunctuation = new Regex(@"([\.\?\!,:;\-]""?)(\S)",
+                                                                           RegexOptions.Compiled |
+                                                                           RegexOptions.Multiline);
+
+        private static readonly Regex _firstLowerCaseLetterAfterSentence = new Regex(@"(\.\s*)([a-z])",
+                                                                                     RegexOptions.Compiled |
+                                                                                     RegexOptions.Multiline);
+
+        private static readonly Regex _lowercaseI = new Regex(@"([\s\p{P}])i([\s\p{P}])",
+                                                              RegexOptions.Compiled | RegexOptions.Multiline);
+
+
+        /// <summary>
+        /// Compares a string to a given string. The comparison is case insensitive.
+        /// </summary>      
+        /// <param name="compareTo">The string to compare against</param>
+        /// <returns>True if the strings are the same, false otherwise.</returns>
+        public static bool Is(this string @string, string compareTo)
+        {
+            return string.Compare(@string, compareTo, true) == 0;
+        }
+
+        /// <summary>
+        /// Creates a type from the given name
+        /// </summary>
+        /// <typeparam name="T">The type being created</typeparam>      
+        /// <param name="args">Arguments to pass into the constructor</param>
+        /// <returns>An instance of the type</returns>
+        public static T CreateType<T>(this string typeName, params object[] args)
+        {
+            Type type = Type.GetType(typeName, true, true);
+            return (T) Activator.CreateInstance(type, args);
+        }
+
+        /// <summary>
+        /// Replaces each newline with a &lt;br /&gt; tag
+        /// </summary>      
+        public static string NewlineToBr(this string html)
+        {
+            return html.Replace(Environment.NewLine, "<br />");
+        }
+
+        /// <summary>
+        /// Removes html tags from a given strnig
+        /// </summary>      
+        public static string StripHtml(this string html)
+        {
+            return _htmlTagPattern.Replace(html, "");
+        }
+
+        /// <summary>
+        /// Removes extra spaces within a string
+        /// </summary>      
+        public static string Strip(this string @string)
+        {
+            return _multipleSpaces.Replace(@string, " ");
+        }
+
+        /// <summary>
+        /// Fixes a paragraph so that it more properly conforms to english rules (single space after punctuation,
+        /// capitalization and so on).
+        /// </summary>      
+        public static string Proper(this string paragraph)
+        {
+            paragraph = _noSpaceAfterPunctuation.Replace(paragraph, "$1 $2").Strip();
+            paragraph = _firstLowerCaseLetterAfterSentence.Replace(paragraph,
+                                                                   m => m.Groups[1].Value + m.Groups[2].Value.ToUpper());
+            paragraph = paragraph.Substring(0, 1).ToUpper() + paragraph.Substring(1);
+            paragraph = _lowercaseI.Replace(paragraph, "$1I$2");
+            return paragraph;
+        }
+
+        /// <summary>
+        /// Reverse the order of a string
+        /// </summary>      
+        public static string Reverse(this string @string)
+        {
+            char[] reversed = @string.ToCharArray();
+            Array.Reverse(reversed);
+            return new string(reversed);
+        }
+
+        /// <summary>
+        /// Applies formatting to the specified string
+        /// </summary>      
+        public static string FormatWith(this string @string, params object[] args)
+        {
+            return string.Format(@string, args);
+        }
+
+        /// <summary>
+        /// Capitalizes the first letter of a string
+        /// </summary>      
+        public static string Capitalize(this string @string)
+        {
+            if (@string.Length == 0)
+            {
+                return @string;
+            }
+            if (@string.Length == 1)
+            {
+                return @string.ToUpper(CultureInfo.InvariantCulture);
+            }
+            return @string.Substring(0, 1).ToUpper(CultureInfo.InvariantCulture) + @string.Substring(1);
+        }
+
+        /// <summary>
+        /// Returns the right portion of the string for the specified length
+        /// </summary>
+        public static string Right(this string @string, int length)
+        {
+            if (length <= 0 || @string.Length == 0)
+            {
+                return string.Empty;
+            }
+            if (@string.Length <= length)
+            {
+                return @string;
+            }
+            return @string.Substring(@string.Length - length, length);
+        }
+
+        /// <summary>
+        /// Returns the left portion of the string for the specified length
+        /// </summary>
+        public static string Left(this string @string, int length)
+        {
+            if (length <= 0 || @string.Length == 0)
+            {
+                return string.Empty;
+            }
+            if (@string.Length <= length)
+            {
+                return @string;
+            }
+            return @string.Substring(0, length);
+        }
+
+        // TODO rename to Substring?
+        // TODO add the LeftOf extension
+        // TODO add RightOfLeftOf
+        // TODO add Char overloads
+        // TODO add Inclusive/Exclusive options
+        // TODO add check validity of startIndex
+        // TODO length??
+        // TODO support Regex and autoregex detection
+
+        /// <summary>
+        /// Returns the substring of a string starting after the first match of the specified string.
+        /// Parameters specify the starting search position and the type of search to be used for the string.
+        /// (Added 2009-03-11 by Jacco)
+        /// </summary>
+        /// <param name="source"></param>
+        /// <param name="value">The System.String to seek.</param>
+        /// <param name="startIndex">The search starting position.</param>
+        /// <param name="comparisonType">The search type to use.</param>
+        /// <returns>A System.String</returns>
+        public static string RightOf(this string source, string value, int startIndex, StringComparison comparisonType)
+        {
+            if (value == null)
+                throw new ArgumentNullException("value");
+            if (source == null)
+                throw new ArgumentNullException("source");
+            if (startIndex > source.Length)
+                throw new ArgumentOutOfRangeException("startIndex out of range"
+                    );
+            if (startIndex < 0)
+                throw new ArgumentOutOfRangeException("startIndex out od range"
+                    );
+            // TODO shortcut exit on source/value length == 0
+            string result = null;
+            if (source != null)
+            {
+                int startPos = source.IndexOf(value, startIndex, comparisonType);
+                if (startPos >= 0)
+                {
+                    startPos = startPos + value.Length;
+                    result = source.Substring(startPos);
+                }
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// Returns the substring of a string starting after the first match of the specified string.
+        /// Parameters specify the starting search position.
+        /// (Added 2009-03-11 by Jacco)
+        /// </summary>
+        /// <param name="source"></param>
+        /// <param name="value">The System.String to seek.</param>
+        /// <param name="startIndex">The search type to use.</param>
+        /// <returns>A System.String</returns>
+        public static string RightOf(this string source, string value, int startIndex)
+        {
+            return source.RightOf(value, startIndex, StringComparison.CurrentCulture);
+        }
+
+        /// <summary>
+        /// Returns the substring of a string starting after the first match of the specified string.
+        /// Parameters specify the type of search to be used for the string.
+        /// (Added 2009-03-11 by Jacco)
+        /// </summary>
+        /// <param name="source"></param>
+        /// <param name="value">The System.String to seek.</param>
+        /// <param name="comparisonType">The search type to use.</param>
+        /// <returns>A System.String</returns>
+        public static string RightOf(this string source, string value, StringComparison comparisonType)
+        {
+            return source.RightOf(value, 0, comparisonType);
+        }
+
+        /// <summary>
+        /// Returns the substring of a string starting after the first match of the specified string.
+        /// (Added 2009-03-11 by Jacco)
+        /// </summary>
+        /// <param name="source"></param>
+        /// <param name="value">The System.String to seek.</param>
+        /// <returns>A System.String</returns>
+        public static string RightOf(this string source, string value)
+        {
+            return source.RightOf(value, 0, StringComparison.CurrentCulture);
+        }
+
+        /// <summary>
+        /// new
+        /// </summary>
+        /// <param name="source"></param>
+        /// <param name="maxLength"></param>
+        /// <returns></returns>
+        public static string Truncate(this string source, int maxLength)
+        {
+            // todo < 0 should return exeption?
+            // todo null should return null or exception?
+            // todo remove "..." (Clip would be better)
+            if (string.IsNullOrEmpty(source) || maxLength <= 0)
+                return string.Empty;
+            else if (source.Length > maxLength)
+                return source.Substring(0, maxLength) + "...";
+            else
+                return source;
+        }
+
+        #endregion
+
+        #region StringConversionExtensions
+
+        /// <summary>
+        /// UrlEncodes a string
+        /// </summary>      
+        public static string EncodeUrl(this string @string)
+        {
+            return HttpUtility.UrlEncode(@string);
+        }
+
+        /// <summary>
+        /// UrlDecodes a string
+        /// </summary>      
+        public static string DecodeUrl(this string @string)
+        {
+            return HttpUtility.UrlDecode(@string);
+        }
+
+        /// <summary>
+        /// HtmlEncodes a string
+        /// </summary>      
+        public static string EncodeHtml(this string @string)
+        {
+            return HttpUtility.HtmlEncode(@string);
+        }
+
+        /// <summary>
+        /// HtmlDecodes a string
+        /// </summary>
+        public static string DecodeHtml(this string @string)
+        {
+            return HttpUtility.HtmlDecode(@string);
+        }
+
+        /// <summary>
+        /// Base64's a string with the default encoding type
+        /// </summary>
+        public static string EncodeBase64(this string @string)
+        {
+            return @string.EncodeBase64(EncodingType.Default);
+        }
+
+        /// <summary>
+        /// Base64's a string with the specified encoding type
+        /// </summary>      
+        public static string EncodeBase64(this string @string, EncodingType encoding)
+        {
+            return Convert.ToBase64String(@string.ToBytes(encoding));
+        }
+
+        /// <summary>
+        /// Decodes a base64 string using the default encoding type
+        /// </summary>
+        public static string DecodeBase64(this string base64String)
+        {
+            return base64String.DecodeBase64(EncodingType.Default);
+        }
+
+        /// <summary>
+        /// Decodes a base64 string using the specified encoding type
+        /// </summary>
+        public static string DecodeBase64(this string base64String, EncodingType encoding)
+        {
+            return GetEncoding(encoding).GetString(Convert.FromBase64String(base64String));
+        }
+
+        /// <summary>
+        /// Escapes the single quotes within a string
+        /// </summary>      
+        public static string EncodeJavascript(this string @string)
+        {
+            return @string.Replace("'", "\\'");
+        }
+
+        /// <summary>
+        /// Converts a string to bytes
+        /// </summary>      
+        public static byte[] ToBytes(this string @string)
+        {
+            return @string.ToBytes(EncodingType.Default);
+        }
+
+        /// <summary>
+        /// Converts a string to bytes
+        /// </summary>      
+        public static byte[] ToBytes(this string @string, EncodingType encoding)
+        {
+            return GetEncoding(encoding).GetBytes(@string);
+        }
+
+        private static Encoding GetEncoding(EncodingType encoding)
+        {
+            switch (encoding)
+            {
+                case EncodingType.Utf8:
+                    return Encoding.UTF8;
+                case EncodingType.Utf7:
+                    return Encoding.UTF7;
+                case EncodingType.Unicode:
+                    return Encoding.Unicode;
+                case EncodingType.Ascii:
+                    return Encoding.ASCII;
+                default:
+                    return Encoding.Default;
+            }
+        }
+
+        #endregion
+
+        #region StringParsersExtensions
+
+        private static readonly Regex _emailPattern =
+            new Regex(
+                @"^([a-zA-Z0-9_\-\.]+)@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.)|(([a-zA-Z0-9\-]+\.)+))([a-zA-Z]{2,6}|[0-9]{1,})(\]?)$",
+                RegexOptions.Compiled);
+
+        /// <summary>
+        /// Attempts to extract an integer from a string. This function behaves similarly
+        /// to atoi functions, which will read up to a non-numeric value. For example:
+        /// 103abc --> 103   or -1!  -> -1 
+        /// </summary>
+        /// <remarks>
+        /// This will throw an exception on failure
+        /// </remarks>      
+        public static int ExtractInt(this string @string)
+        {
+            if (@string.Length == 0)
+            {
+                throw new FormatException();
+            }
+            @string = @string.Trim();
+            bool isNegative = (@string[0] == '-');
+            if (isNegative && @string.Length == 1)
+            {
+                throw new FormatException();
+            }
+            int offset = isNegative ? 1 : 0;
+            if (@string[offset] < '0' || @string[offset] > '9')
+            {
+                throw new FormatException();
+            }
+            int value = 0;
+            for (; offset < @string.Length; ++offset)
+            {
+                char c = @string[offset];
+                if (c < '0' || c > '9')
+                {
+                    break;
+                }
+                value = value*10 + (c - '0');
+            }
+            return isNegative ? -1*value : value;
+        }
+
+        /// <summary>
+        /// Validates that a string is a syntactically valid email address
+        /// </summary>
+        /// <param name="email">The string to validate</param>
+        /// <returns>True if the string is a valid email, false otherwise</returns>
+        public static bool IsEmail(this string email)
+        {
+            return _emailPattern.IsMatch(email);
+        }
+
+        /// <summary>
+        /// Attempts to extract an integer from a string
+        /// </summary>      
+        public static bool TryExtractInt(this string @string, out int value)
+        {
+            try
+            {
+                value = @string.ExtractInt();
+                return true;
+            }
+            catch (FormatException)
+            {
+                value = 0;
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Parses an integer from a string
+        /// </summary>      
+       
+
+        public static int ToInt(this string @string, int defaultValue=0)
+        {
+            int value;
+            return !int.TryParse(@string, out value) ? defaultValue : value;
+        }
+
+        /// <summary>
+        /// Parses a boolean from a string (including "0" and "1")
+        /// </summary>      
+        public static bool ToBoolean(this string @string)
+        {
+            if (@string == "0")
+            {
+                return false;
+            }
+            if (@string == "1")
+            {
+                return true;
+            }
+            return bool.Parse(@string);
+        }
+
+        public static bool ToBoolean(this string @string, bool defaultValue)
+        {
+            bool value;
+            return !bool.TryParse(@string, out value) ? defaultValue : value;
+        }
+
+        /// <summary>
+        /// Parses a double from a string
+        /// </summary>      
+        public static double ToDouble(this string @string)
+        {
+            return double.Parse(@string);
+        }
+
+        public static double ToDouble(this string @string, double defaultValue)
+        {
+            double value;
+            return !double.TryParse(@string, out value) ? defaultValue : value;
+        }
+
+        /// <summary>
+        /// Parses a float from a string
+        /// </summary>
+        /// <param name="string"></param>
+        /// <returns></returns>
+        public static float ToFloat(this string @string)
+        {
+            return float.Parse(@string);
+        }
+
+        public static float ToFloat(this string @string, float defaultValue)
+        {
+            float value;
+            return !float.TryParse(@string, out value) ? defaultValue : value;
+        }
+
+        /// <summary>
+        /// Parses a decimal from a string
+        /// </summary>
+        /// <param name="string"></param>
+        /// <returns></returns>
+        public static decimal ToDecimal(this string @string)
+        {
+            decimal  result = 0;
+            return decimal.TryParse(@string,out result) ? result : 0;
+        }
+
+        public static decimal ToDecimal(this string @string, decimal defaultValue)
+        {
+            decimal value;
+            return !decimal.TryParse(@string, out value) ? defaultValue : value;
+        }
+
+        public static T ToEnum<T>(this string @string)
+        {
+            Type type = typeof (T);
+            if (!type.IsEnum)
+            {
+                throw new InvalidOperationException("ToEnum must be called on type which inherits from System.Enum");
+            }
+            var parsed = (T) Enum.Parse(type, @string, true);
+            if (!Enum.IsDefined(type, parsed))
+            {
+                throw new ArgumentException(string.Format("'{0}' cannot be parsed into a value of type '{1}'", @string,
+                                                          type.Name));
+            }
+            return parsed;
+        }
+
+        public static T ToEnum<T>(this string @string, T defaultValue)
+        {
+            Type type = typeof (T);
+            if (!type.IsEnum)
+            {
+                throw new InvalidOperationException("ToEnum must be called on type which inherits from System.Enum");
+            }
+
+            try
+            {
+                var parsed = (T) Enum.Parse(type, @string, true);
+                return !Enum.IsDefined(type, parsed) ? defaultValue : parsed;
+            }
+            catch (ArgumentException)
+            {
+                return defaultValue;
+            }
+        }
+
+        #endregion
+    }
+
+    public static class DayExtensions
+    {
+        #region main
+        /// <summary>
+        /// Gets a DateTime representing the first day in the current month
+        /// </summary>
+        /// <param name="current">The current date</param>
+        /// <returns></returns>
+        public static DateTime First(this DateTime current)
+        {
+            return current.AddDays(1 - current.Day);
+        }
+
+        /// <summary>
+        /// Gets a DateTime representing the first specified day in the current month
+        /// </summary>
+        /// <param name="current">The current day</param>
+        /// <param name="dayOfWeek">The current day of week</param>
+        /// <returns></returns>
+        public static DateTime First(this DateTime current, DayOfWeek dayOfWeek)
+        {
+            DateTime first = current.First();
+            if (first.DayOfWeek != dayOfWeek)
+            {
+                first = first.Next(dayOfWeek);
+            }
+            return first;
+        }
+
+        /// <summary>
+        /// Gets a DateTime representing the last day in the current month
+        /// </summary>
+        /// <param name="current">The current date</param>
+        /// <returns></returns>
+        public static DateTime Last(this DateTime current)
+        {
+            int daysInMonth = DateTime.DaysInMonth(current.Year, current.Month);
+            return current.First().AddDays(daysInMonth - 1);
+        }
+
+        /// <summary>
+        /// Gets a DateTime representing the last specified day in the current month
+        /// </summary>
+        /// <param name="current">The current date</param>
+        /// <param name="dayOfWeek">The current day of week</param>
+        /// <returns></returns>
+        public static DateTime Last(this DateTime current, DayOfWeek dayOfWeek)
+        {
+            DateTime last = current.Last();
+            return last.AddDays(Math.Abs(dayOfWeek - last.DayOfWeek) * -1);
+        }
+
+        /// <summary>
+        /// Gets a DateTime representing the first date following the current date which falls on the given day of the week
+        /// </summary>
+        /// <param name="current">The current date</param>
+        /// <param name="dayOfWeek">The day of week for the next date to get</param>
+        public static DateTime Next(this DateTime current, DayOfWeek dayOfWeek)
+        {
+            int offsetDays = dayOfWeek - current.DayOfWeek;
+            if (offsetDays <= 0)
+            {
+                offsetDays += 7;
+            }
+            return current.AddDays(offsetDays);
+        }
+        #endregion
+        #region TimeExtensions
+        /// <summary>
+        /// Gets a DateTime representing midnight on the current date
+        /// </summary>
+        /// <param name="current">The current date</param>
+        public static DateTime Midnight(this DateTime current)
+        {
+            return new DateTime(current.Year, current.Month, current.Day);
+        }
+
+        /// <summary>
+        /// Gets a DateTime representing noon on the current date
+        /// </summary>
+        /// <param name="current">The current date</param>
+        public static DateTime Noon(this DateTime current)
+        {
+            return new DateTime(current.Year, current.Month, current.Day, 12, 0, 0);
+        }
+        /// <summary>
+        /// Sets the time of the current date with minute precision
+        /// </summary>
+        /// <param name="current">The current date</param>
+        /// <param name="hour">The hour</param>
+        /// <param name="minute">The minute</param>
+        public static DateTime SetTime(this DateTime current, int hour, int minute)
+        {
+            return SetTime(current, hour, minute, 0, 0);
+        }
+
+        /// <summary>
+        /// Sets the time of the current date with second precision
+        /// </summary>
+        /// <param name="current">The current date</param>
+        /// <param name="hour">The hour</param>
+        /// <param name="minute">The minute</param>
+        /// <param name="second">The second</param>
+        /// <returns></returns>
+        public static DateTime SetTime(this DateTime current, int hour, int minute, int second)
+        {
+            return SetTime(current, hour, minute, second, 0);
+        }
+
+        /// <summary>
+        /// Sets the time of the current date with millisecond precision
+        /// </summary>
+        /// <param name="current">The current date</param>
+        /// <param name="hour">The hour</param>
+        /// <param name="minute">The minute</param>
+        /// <param name="second">The second</param>
+        /// <param name="millisecond">The millisecond</param>
+        /// <returns></returns>
+        public static DateTime SetTime(this DateTime current, int hour, int minute, int second, int millisecond)
+        {
+            return new DateTime(current.Year, current.Month, current.Day, hour, minute, second, millisecond);
+        }
+        #endregion
+    }
+
+    public static class InputHelpersExtensions
+    {
+        public static MvcHtmlString Message(this HtmlHelper helper, string message, string cssclass)
+        {
+            return MvcHtmlString.Create(@"<div class='example'>" + message + "</div>");
+        }
+
+        public static MvcHtmlString Mailto(this HtmlHelper helper, string emailAddress, string displayText = null)
+        {
+            if (string.IsNullOrEmpty(displayText))
+                displayText = emailAddress;
+
+            string sb = string.Format("<a href=\"{0}{1}\" title=\"{1}\">{2}</a>", CharEncode("mailto:"),
+                                      CharEncode(emailAddress), CharEncode(displayText));
+            return new MvcHtmlString(sb);
+        }
+
+        public static string CharEncode(string value)
+        {
+            Encoding enc = Encoding.Default;
+            string retval = "";
+            for (int i = 0; i < value.Length; i++)
+            {
+                retval += "&#" + enc.GetBytes(new[] {Convert.ToChar(value.Substring(i, 1))})[0] + ";";
+            }
+            return retval;
+        }
+
+        public static MvcHtmlString ActionImage(this HtmlHelper html, string imageUrl,
+                                                string action, string controller, object routeValues,
+                                                object htmlAttributes)
+        {
+            var urlHelper = new UrlHelper(html.ViewContext.RequestContext);
+            var link = new TagBuilder("a");
+            link.Attributes.Add("href", urlHelper.Action(action, controller, routeValues));
+            var img = new TagBuilder("img");
+            img.Attributes.Add("src", imageUrl);
+            img.Attributes.Add("alt", action);
+            link.InnerHtml = img.ToString(TagRenderMode.SelfClosing);
+            return MvcHtmlString.Create(link.ToString(TagRenderMode.Normal));
+        }
+
+        public static MvcHtmlString Email(this HtmlHelper html, string name)
+        {
+            return html.Email(name, string.Empty);
+        }
+
+        public static MvcHtmlString Email(this HtmlHelper html, string name, string value)
+        {
+            var tb = new TagBuilder("input");
+            tb.Attributes.Add("type", "email");
+            tb.Attributes.Add("name", name);
+            tb.Attributes.Add("value", value);
+            tb.GenerateId(name);
+            return MvcHtmlString.Create(tb.ToString(TagRenderMode.SelfClosing));
+        }
+
+        //public static MvcHtmlString Captcha(this HtmlHelper htmlHelper, string textRefreshButton, int length)
+        //{
+        //    return CaptchaHelper.GenerateFullCaptcha(htmlHelper, textRefreshButton, length);
+        //}
+
+        //public static MvcHtmlString Captcha(this HtmlHelper htmlHelper, int length)
+        //{
+        //    return CaptchaHelper.GenerateFullCaptcha(htmlHelper, length);
+        //}
+    }
+
+    public static class OtherExtensions
+    {
+        /// <summary>
+        /// Convert object to Dictionary of strings and objects
+        /// </summary>
+        /// <param name="_object">Object of Dictionary of strings and objects (e.g. 'new { name="value" }')</param>
+        /// <returns>Dictionary of strings and objects</returns>
+        public static IDictionary<string, object> ToDictionary(this object _object)
+        {
+            if (_object == null) return new Dictionary<string, object>();
+            if (_object is IDictionary<string, object>) return (IDictionary<string, object>) _object;
+            PropertyDescriptorCollection objectProperties = TypeDescriptor.GetProperties(_object);
+            var dictionary = new Dictionary<string, object>(objectProperties.Count);
+            foreach (PropertyDescriptor property in objectProperties)
+            {
+                string name = property.Name.Replace("_", "-");
+                object value = property.GetValue(_object);
+                dictionary.Add(name, value ?? "");
+            }
+            return dictionary;
+        }
+
+        public static bool ContainsValue<K, V>(this IDictionary<K, V> instance, V value)
+        {
+            return instance.Exists(kvp => kvp.Value.Equals(value));
+        }
+
+        /// <summary>
+        /// Gets the first key with the matching value. Returns true if the value is found, false if not.
+        /// </summary>
+        public static bool TryGetKey<K, V>(this IDictionary<K, V> instance, V value, out K key)
+        {
+            foreach (var entry in instance)
+            {
+                if (entry.Value.Equals(value))
+                {
+                    key = entry.Key;
+                    return true;
+                }
+            }
+            key = default(K);
+            return false;
+        }
+
+        /// <summary>
+        /// Gets all of th ekeys with the matching value. Returns true if the value is found, false if not.
+        /// </summary>
+        public static bool TryGetKeys<K, V>(this IDictionary<K, V> instance, V value, out K[] keys)
+        {
+            List<K> found = (from entry in instance where entry.Value.Equals(value) select entry.Key).ToList();
+            keys = found.ToArray();
+            return found.Count > 0;
+        }
+
+        public static IList<K> Map<T, K>(this IList<T> list, Func<T, K> function)
+        {
+            var newList = new List<K>(list.Count);
+            for (int i = 0; i < list.Count; ++i)
+            {
+                newList.Add(function(list[i]));
+            }
+            return newList;
+        }
+
+        /// <summary>
+        /// Determines if the object is in the specific list.
+        /// </summary>      
+        public static bool In(this object @object, IEnumerable list)
+        {
+            foreach (object item in list)
+            {
+                if (item.Equals(@object))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// new
+        /// </summary>
+        /// <param name="object"></param>
+        /// <returns></returns>
+        public static bool IsNull(this object @object)
+        {
+            return ReferenceEquals(@object, null);
+        }
+
+        /// <summary>
+        /// new should we add this? !IsNull is almost just as readable
+        /// </summary>
+        /// <param name="object"></param>
+        /// <returns></returns>
+        public static bool IsNotNull(this object @object)
+        {
+            return !ReferenceEquals(@object, null);
+        }
+
+        // or should this be IsDefault
+        // todo Nullable<T> type handling (.HasValue)
+
+        /// <summary>
+        /// new
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="value"></param>
+        /// <returns></returns>
+        public static bool IsEmpty<T>(this T value) where T : struct
+        {
+            return value.Equals(default(T));
+        }
+
+        /// <summary>
+        /// new
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="value"></param>
+        /// <returns></returns>
+        public static bool IsNotEmpty<T>(this T value) where T : struct
+        {
+            return !value.Equals(default(T));
+        }
+
+        /// <summary>
+        /// Convert lambda expression to property name
+        /// </summary>
+        /// <typeparam name="TModel">Current ViewModel</typeparam>
+        /// <typeparam name="TItem">ViewModel Item</typeparam>
+        /// <param name="propertyExpression">Lambda expression of property value</param>
+        /// <returns>Property value string</returns>
+        public   static string ToProperty<TModel, TItem>
+          (this Expression<Func<TModel, TItem>> propertyExpression)
+        {
+            // v.1.4
+            return ExpressionHelper.GetExpressionText(propertyExpression);
+
+            // v.1.3c
+            //var lambda = propertyExpression as LambdaExpression;
+            //var expression = lambda.Body.ToString();
+            //return expression.Substring(expression.IndexOf('.') + 1);
+
+            // v.1.2
+            //// return property name only
+            //var lambda = propertyExpression as LambdaExpression;
+            //MemberExpression memberExpression;
+            //if (lambda.Body is UnaryExpression) {
+            //  var unaryExpression = lambda.Body as UnaryExpression;
+            //  memberExpression = unaryExpression.Operand as MemberExpression;
+            //}
+            //else
+            //  memberExpression = lambda.Body as MemberExpression;
+            //var propertyInfo = memberExpression.Member as PropertyInfo;
+            //return propertyInfo.Name;
+        }
+    }
+
+
+    public static class ReportExtenstion
+    {
+        public static ReportResult GetReportResult(this Report rpt, string fname)
+        {
+            var extension = (Path.GetExtension(fname) ?? "").ToLower();
+            if (extension == ".pdf")
+            {
+                return new ReportResult(rpt, new PdfReportWriter())
+                {
+                    FileName = fname
+                };
+            }
+            else if (extension == ".txt" | extension == ".csv")
+            {
+                return new ReportResult(rpt, new DelimitedTextReportWriter())
+                {
+                    FileName = fname
+                };
+            }
+            else if (extension == ".xlsx")
+            {
+                return new ReportResult(rpt, new ExcelReportWriter())
+                {
+                    FileName = fname
+                };
+            }
+            else if ( extension == ".xls")
+            {
+                return new ReportResult(rpt, new DoddleReport.Writers.ExcelReportWriter())
+                {
+                    FileName = fname
+                };
+            }
+            else if (extension == ".htm" | extension == ".html")
+            {
+                return new ReportResult(rpt, new HtmlReportWriter())
+                {
+                    FileName = fname
+                };
+            }
+            else
+            {
+                return new ReportResult(rpt);
+            }
+        }
+
+        public static string GetReportFooter(int userid)
+        {
+            return "User :" + EntityUtil.GetUserById(userid).cUserName + " at " + utility.getCurrentDateTime();
+        }
+    }
+
+    public static class PermissionTypeExtension
+    {
+        public static bool CanRead(this PermissionType up)
+        {
+            return (up != PermissionType.None);
+        }
+
+        public static bool CanDelete(this PermissionType up)
+        {
+            return (up == PermissionType.ReadDeleteOnly | up == PermissionType.ReadEditDeleteOnly | up == PermissionType.ReadAddDeleteOnly | up == PermissionType.ReadAddEditDeleteOnly | up == PermissionType.FullControl);
+        }
+
+        public static bool CanEdit(this PermissionType up)
+        {
+            return (up == PermissionType.ReadEditOnly | up == PermissionType.ReadEditAddOnly | up == PermissionType.ReadEditDeleteOnly | up == PermissionType.ReadAddEditDeleteOnly | up == PermissionType.FullControl);
+        }
+
+        public static bool CanAdd(this PermissionType up)
+        {
+            return (up == PermissionType.ReadAddOnly |
+                    up == PermissionType.ReadEditAddOnly |
+                    up == PermissionType.ReadAddDeleteOnly |
+                    up == PermissionType.ReadAddEditDeleteOnly |
+                    up == PermissionType.FullControl);
+        }
+
+    }
+}
